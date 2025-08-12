@@ -1,20 +1,41 @@
-import { createClient } from '@/lib/supabase';
+import { createClient } from '../lib/supabase';
+
+export const revalidate = 60; // ISR: 1 min
 
 export default async function Home() {
   const supabase = createClient();
-  const { data: tweets } = await supabase.from('tweets').select('*').order('likes', { ascending: false }).limit(10);
+
+  // Vlečemo samo včerajšnje (če že obstajajo)
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const y0 = new Date(yesterday.toDateString()); // reset time
+
+  const { data: tweets, error } = await supabase
+    .from('tweets')
+    .select('*')
+    .gte('date', y0.toISOString())
+    .order('likes', { ascending: false })
+    .limit(20);
 
   return (
-    <main className="p-6 bg-black text-white min-h-screen">
-      <h1 className="text-2xl font-bold mb-4">Top tviti preteklega dne 🇸🇮</h1>
-      <div className="grid gap-4">
-        {tweets?.map((tweet: any) => (
-          <div key={tweet.id} className="border p-4 rounded-lg bg-gray-900">
-            <p className="mb-2">{tweet.text}</p>
-            <a href={tweet.url} target="_blank" className="text-blue-400">Poglej na X</a>
-            <div className="text-sm mt-2 text-gray-400">❤️ {tweet.likes} 🔁 {tweet.retweets}</div>
-          </div>
+    <main className="container">
+      <h1 style={{fontWeight:700, fontSize:28, marginBottom:8}}>Top tviti preteklega dne 🇸🇮</h1>
+      <p style={{color:'#9ca3af', marginBottom:24}}>Prototip (brez X API). Podatki se pridobijo dnevno prek Nitter iskanja za <code>lang:sl</code>.</p>
+
+      {error && <div className="card">Napaka pri branju: {error.message}</div>}
+
+      <div className="grid">
+        {tweets?.map((t: any) => (
+          <article key={t.id} className="card">
+            <p style={{whiteSpace:'pre-wrap'}}>{t.text}</p>
+            <div className="badge">❤️ {t.likes} · 🔁 {t.retweets}</div>
+            <a href={t.url} target="_blank" rel="noreferrer">Odpri na X</a>
+          </article>
         ))}
+
+        {!tweets?.length && (
+          <div className="card">Ni podatkov za včeraj. Zaženi cron ali pokliči <code>/api/fetchTweets</code>.</div>
+        )}
       </div>
     </main>
   );
