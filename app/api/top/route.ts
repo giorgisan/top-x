@@ -1,6 +1,7 @@
-import * as cheerio from 'cheerio';
+import { parse } from 'node-html-parser';
 
-export const runtime = 'nodejs'; // zagotovi node runtime
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 type TopTweet = {
   id: string;
@@ -12,8 +13,11 @@ type TopTweet = {
   score: number;
 };
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const { searchParams } = new URL(request.url);
+    const limit = Number(searchParams.get('limit') || 20);
+
     const now = new Date();
     const until = now.toISOString().slice(0, 10);
     now.setDate(now.getDate() - 1);
@@ -27,28 +31,39 @@ export async function GET() {
       cache: 'no-store'
     }).then(r => r.text());
 
-    const $ = cheerio.load(html);
+    const root = parse(html);
+    const timeline = root.querySelectorAll('.timeline .timeline-item');
     const items: TopTweet[] = [];
 
-    $('.timeline .timeline-item').each((_, el) => {
-      const $el = $(el);
-      const linkEl = $el.find('.tweet-date a').attr('href');
-      if (!linkEl) return;
-      const id = (linkEl.split('/status/')[1] || '').split(/[?/]/)[0];
-      if (!id) return;
-      const tweetUrl = `https://x.com${linkEl.replace('/i/web', '')}`;
-      const text = $el.find('.tweet-content').text().trim();
-      const num = (sel: string) => Number(($el.find(sel).first().text().trim().replace(/[^0-9]/g, '')) || 0);
-      const likes = num('.icon-heart + .tweet-stat');
-      const retweets = num('.icon-retweet + .tweet-stat');
-      const dateAttr = $el.find('.tweet-date a').attr('title') || '';
+    for (const el of timeline) {
+      const linkEl = el.querySelector('.tweet-date a');
+      const href = linkEl?.getAttribute('href');
+      if (!href) continue;
+
+      const id = (href.split('/status/')[1] || '').split(/[?/]/)[0];
+      if (!id) continue;
+
+      const tweetUrl = `https://x.com${href.replace('/i/web', '')}`;
+      const text = (el.querySelector('.tweet-content')?.text || '').trim();
+
+      const numberFrom = (selector: string) => {
+        const n = el.querySelector(selector)?.text?.trim().replace(/[^0-9]/g, '') || '0';
+        return Number(n);
+      };
+      const likes = numberFrom('.icon-heart + .tweet-stat');
+      const retweets = numberFrom('.icon-retweet + .tweet-stat');
+
+      const dateAttr = linkEl.getAttribute('title') || '';
       const dateISO = dateAttr ? new Date(dateAttr).toISOString() : new Date().toISOString();
+
       const score = likes + retweets * 2;
       items.push({ id, text, url: tweetUrl, likes, retweets, dateISO, score });
-    });
+    }
 
     items.sort((a, b) => b.score - a.score);
-    return new Response(JSON.stringify({ ok: true, data: items.slice(0, 20) }), {
+    const data = items.slice(0, limit);
+
+    return new Response(JSON.stringify({ ok: true, data }), {
       headers: { 'content-type': 'application/json' }
     });
   } catch (e: any) {
