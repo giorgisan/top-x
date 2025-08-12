@@ -37,7 +37,7 @@ export async function GET(request: Request) {
 
     for (const el of timeline) {
       const linkEl = el.querySelector('.tweet-date a');
-      const href = linkEl?.getAttribute('href');
+      const href = linkEl?.getAttribute('href') ?? null;
       if (!href) continue;
 
       const id = (href.split('/status/')[1] || '').split(/[?/]/)[0];
@@ -47,13 +47,14 @@ export async function GET(request: Request) {
       const text = (el.querySelector('.tweet-content')?.text || '').trim();
 
       const numberFrom = (selector: string) => {
-        const n = el.querySelector(selector)?.text?.trim().replace(/[^0-9]/g, '') || '0';
-        return Number(n);
+        const raw = el.querySelector(selector)?.text?.trim().replace(/[^0-9]/g, '') ?? '0';
+        return Number(raw || 0);
       };
       const likes = numberFrom('.icon-heart + .tweet-stat');
       const retweets = numberFrom('.icon-retweet + .tweet-stat');
 
-      const dateAttr = linkEl.getAttribute('title') || '';
+      // ✅ varno branje atributa (linkEl je lahko null)
+      const dateAttr = linkEl?.getAttribute('title') ?? '';
       const dateISO = dateAttr ? new Date(dateAttr).toISOString() : new Date().toISOString();
 
       const score = likes + retweets * 2;
