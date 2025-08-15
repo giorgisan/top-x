@@ -1,4 +1,4 @@
-import * as cheerio from 'cheerio';
+import { parse } from 'node-html-parser';
 import { supabase } from '../../../lib/supabase';
 import { categorize, makeSnippet } from '../../../lib/categorize';
 
@@ -30,25 +30,19 @@ function proxy(u: string) {
   return `https://r.jina.ai/http://${url.host}${url.pathname}${url.search}`;
 }
 
-function timeout(ms: number) {
-  return new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms));
-}
-
 async function fetchHtml(url: string): Promise<{ html: string; used: string }> {
-  const targets = [proxy(url), url]; // poskusi proxy, nato direkt
+  const targets = [proxy(url), url]; // najprej prek proxyja, nato direktno
   let lastErr: any = null;
-
   for (const u of targets) {
     try {
-      const p = fetch(u, {
+      const res = await fetch(u, {
         headers: {
           'user-agent': 'Mozilla/5.0',
           'accept-language': 'sl-SI,sl;q=0.9,en;q=0.8'
         },
         cache: 'no-store'
       });
-      const res = (await Promise.race([p, timeout(15000)])) as Response;
-      if (!res?.ok) throw new Error(`HTTP ${res?.status}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const html = await res.text();
       if (!html || html.length < 200) throw new Error('empty html');
       return { html, used: u };
@@ -69,43 +63,40 @@ export async function GET() {
     now.setDate(now.getDate() - 1);
     const since = now.toISOString().slice(0, 10);
 
-    // 2 poizvedbi: z in brez lang:sl (ker včasih ne vrne nič)
+    // query z in brez lang:sl (ker včasih nič ne vrne)
     const q1 = encodeURIComponent(`lang:sl src:tweet since:${since} until:${until}`);
     const q2 = encodeURIComponent(`src:tweet since:${since} until:${until}`);
-    const searchPaths = [`/search?f=tweets&q=${q1}`, `/search?f=tweets&q=${q2}`];
+    const paths = [`/search?f=tweets&q=${q1}`, `/search?f=tweets&q=${q2}`];
 
-    let html = '';
-    let source = '';
     let items: TopTweet[] = [];
+    let usedSource = '';
     let lastErr: any = null;
 
-    // poskusi več instanc in oba queryja
     outer: for (const base of NITTERS) {
-      for (const path of searchPaths) {
+      for (const path of paths) {
         try {
-          const r = await fetchHtml(`${base}${path}`);
-          html = r.html;
-          source = r.used;
+          const { html, used } = await fetchHtml(`${base}${path}`);
+          usedSource = used;
 
-          const $ = cheerio.load(html);
-          const els = $('.timeline .timeline-item');
+          const root = parse(html);
+          const els = root.querySelectorAll('.timeline .timeline-item');
           if (!els.length) throw new Error('no timeline items');
 
-          els.each((_i, el) => {
-            const $el = $(el);
-            const href = $el.find('.tweet-date a').attr('href') || '';
+          for (const el of els) {
+            const linkEl = el.querySelector('.tweet-date a');
+            const href = linkEl?.getAttribute('href') ?? '';
             const id = (href.split('/status/')[1] || '').split(/[?/]/)[0];
-            if (!id) return;
+            if (!id) continue;
 
-            const text = ($el.find('.tweet-content').text() || '').trim();
+            const text = (el.querySelector('.tweet-content')?.text || '').trim();
             const num = (sel: string) => {
-              const raw = ($el.find(sel).text() || '').replace(/[^0-9]/g, '');
+              const raw = el.querySelector(sel)?.text?.trim().replace(/[^0-9]/g, '') ?? '0';
               return Number(raw || 0);
             };
             const likes = num('.icon-heart + .tweet-stat');
             const retweets = num('.icon-retweet + .tweet-stat');
 
-            const dateAttr = $el.find('.tweet-date a').attr('title') || '';
+            const dateAttr = linkEl?.getAttribute('title') ?? '';
             const dateISO = dateAttr ? new Date(dateAttr).toISOString() : new Date().toISOString();
 
             const category = categorize(text);
@@ -123,9 +114,9 @@ export async function GET() {
               snippet,
               score
             });
-          });
+          }
 
-          if (items.length) break outer; // uspeh
+          if (items.length) break outer;
         } catch (e) {
           lastErr = e;
           continue;
@@ -158,7 +149,7 @@ export async function GET() {
     }
 
     return new Response(
-      JSON.stringify({ ok: true, saved, since, until, source }),
+      JSON.stringify({ ok: true, saved, since, until, source: usedSource }),
       { headers: { 'content-type': 'application/json' } }
     );
   } catch (e: any) {
