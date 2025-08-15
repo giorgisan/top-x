@@ -17,56 +17,63 @@ type TopTweet = {
   score: number;
 };
 
-// Fallback seznam javnih Nitter instanc (nekatere so včasih offline)
-// Po potrebi lahko dodaš/odstraniš.
+// Nitter instance za iskanje (nekatere znajo biti začasno nedosegljive)
 const NITTERS = [
   'https://nitter.net',
   'https://nitter.privacydev.net',
   'https://nitter.fdn.fr',
   'https://nitter.poast.org',
-  'https://nitter.moomoo.me',
+  'https://nitter.moomoo.me'
 ];
+
+function withProxy(u: string) {
+  // r.jina.ai vrne HTML ciljne strani in pogosto obide blokade
+  // primer: https://r.jina.ai/http://nitter.net/search?...  (opazno: http v notranjem URL)
+  const url = new URL(u);
+  return `https://r.jina.ai/http://${url.host}${url.pathname}${url.search}`;
+}
 
 function timeout(ms: number) {
   return new Promise((_r, rej) => setTimeout(() => rej(new Error('timeout')), ms));
 }
 
-async function fetchFromAny(urls: string[]): Promise<{ html: string; instance: string }> {
-  let lastErr: any = null;
+async function fetchHtml(url: string, useProxyFirst = true): Promise<{ html: string; used: string }> {
+  const targets = [
+    ...(useProxyFirst ? [withProxy(url)] : []),
+    url
+  ];
 
-  for (const base of urls) {
-    const searchUrl = base;
+  let lastErr: any = null;
+  for (const u of targets) {
     try {
-      const controller = new AbortController();
-      const p = fetch(searchUrl, {
+      const p = fetch(u, {
         headers: {
           'user-agent':
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36',
           'accept-language': 'sl-SI,sl;q=0.9,en;q=0.8'
         },
-        cache: 'no-store',
-        signal: controller.signal
+        cache: 'no-store'
       });
-
-      const res = (await Promise.race([p, timeout(12000)])) as Response;
+      const res = (await Promise.race([p, timeout(15000)])) as Response;
       if (!res || !('ok' in res)) throw new Error('no response');
-      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const html = await res.text();
-      // hiter sanity check
-      if (!html || !html.includes('timeline')) throw new Error('unexpected html');
-      return { html, instance: base };
+      if (!html || !html.toLowerCase().includes('timeline')) {
+        // r.jina.ai včasih ne vsebuje "timeline" stringa, zato dovoli alternativni check
+        if (!html.includes('tweet-content') && !html.includes('timeline-item'))
+          throw new Error('unexpected html');
+      }
+      return { html, used: u };
     } catch (e) {
       lastErr = e;
-      // poskusi naslednjo instanco
-      continue;
     }
   }
-  throw lastErr || new Error('all nitter instances failed');
+  throw lastErr || new Error('fetch failed');
 }
 
 export async function GET() {
   try {
-    const db = supabase(); // Supabase klient
+    const db = supabase();
 
     // včeraj
     const now = new Date();
@@ -75,19 +82,27 @@ export async function GET() {
     const since = now.toISOString().slice(0, 10);
 
     const query = encodeURIComponent(`lang:sl since:${since} until:${until}`);
-    const searchPath = `/search?f=tweets&q=${query}`;
+    const path = `/search?f=tweets&q=${query}`;
 
-    // poskusi več instanc
+    // poskusi zapored več instanc (vsako najprej prek proxyja)
     let html = '';
-    let usedInstance = '';
-    try {
-      const r = await fetchFromAny(NITTERS.map((b) => `${b}${searchPath}`));
-      html = r.html;
-      usedInstance = r.instance;
-    } catch (err: any) {
-      console.error('Nitter fetch error:', err);
+    let source = '';
+    let lastErr: any = null;
+
+    for (const base of NITTERS) {
+      try {
+        const r = await fetchHtml(`${base}${path}`, true);
+        html = r.html;
+        source = r.used;
+        break;
+      } catch (e) {
+        lastErr = e;
+        continue;
+      }
+    }
+    if (!html) {
       return new Response(
-        JSON.stringify({ ok: false, error: 'nitter_fetch_failed', detail: String(err) }),
+        JSON.stringify({ ok: false, error: 'nitter_fetch_failed', detail: String(lastErr) }),
         { status: 502, headers: { 'content-type': 'application/json' } }
       );
     }
@@ -133,30 +148,22 @@ export async function GET() {
     }
 
     // upsert v Supabase
-    try {
-      for (const t of items) {
-        await db.from('tweets').upsert({
-          id: Number(t.id),
-          text: t.text,
-          url: t.url,
-          likes: t.likes,
-          retweets: t.retweets,
-          date: t.dateISO,
-          category: t.category,
-          snippet: t.snippet,
-          score: t.score
-        });
-      }
-    } catch (e: any) {
-      // tipični Supabase problemi: RLS, schema, ključi
-      return new Response(
-        JSON.stringify({ ok: false, error: 'supabase_upsert_failed', detail: String(e) }),
-        { status: 500, headers: { 'content-type': 'application/json' } }
-      );
+    for (const t of items) {
+      await db.from('tweets').upsert({
+        id: Number(t.id),
+        text: t.text,
+        url: t.url,
+        likes: t.likes,
+        retweets: t.retweets,
+        date: t.dateISO,
+        category: t.category,
+        snippet: t.snippet,
+        score: t.score
+      });
     }
 
     return new Response(
-      JSON.stringify({ ok: true, saved: items.length, since, until, nitter: usedInstance }),
+      JSON.stringify({ ok: true, saved: items.length, since, until, source }),
       { headers: { 'content-type': 'application/json' } }
     );
   } catch (e: any) {
