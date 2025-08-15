@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import * as cheerio from 'cheerio';
 
-// ---- konfiguracija iskanja (po potrebi spremeni) ----
+// --- Nitter instance + pomožne ---
 const NITTERS = [
   'https://nitter.net',
   'https://nitter.privacydev.net',
@@ -10,120 +10,147 @@ const NITTERS = [
   'https://nitter.moomoo.me'
 ];
 
-function yesterdayRange() {
+function yRangeUTC() {
+  // včeraj 00:00–24:00 UTC
   const now = new Date();
   const until = now.toISOString().slice(0, 10);
-  now.setDate(now.getDate() - 1);
+  now.setUTCDate(now.getUTCDate() - 1);
   const since = now.toISOString().slice(0, 10);
   return { since, until };
 }
 
 function proxy(u) {
   const url = new URL(u);
-  // r.jina.ai -> HTTP znotraj je pomemben
   return `https://r.jina.ai/http://${url.host}${url.pathname}${url.search}`;
 }
 
 function categorize(t) {
   const s = (t || '').toLowerCase();
   const has = (...w) => w.some(x => s.includes(x));
-  if (has('vlada','minister','parlament','referendum','volitve','poslanec','premier','janša','golob','ministrstvo')) return 'Politika';
-  if (has('olimpija','maribor','nzs','nogomet','košarka','kolesar','tour','dirka','tekma','gol','liga')) return 'Šport';
-  if (has('delnica','borza','inflacija','banka','evro','gospodarstvo','proračun','bdp','davki','podjetje','startup')) return 'Gospodarstvo';
-  if (has('iphone','android','ai','umetna inteligenca','openai','google','apple','program','aplikacija','tehnologija')) return 'Tehnologija';
-  if (has('neurje','vreme','poplava','sneg','vihar','temperatura','nevihta','arso')) return 'Vreme';
-  if (has('glasba','film','serija','zabava','koncert','festival','influencer','zvezda')) return 'Zabava';
+  if (has('vlada','minister','parlament','referendum','volitve','poslanec','premier','golob','janša')) return 'Politika';
+  if (has('olimpija','maribor','nzs','nogomet','košarka','kolesar','tour','tekma','gol','liga')) return 'Šport';
+  if (has('delnica','borza','inflacija','banka','evro','gospodarstvo','proračun','davki','startup')) return 'Gospodarstvo';
+  if (has('iphone','android','ai','umetna inteligenca','openai','google','apple','aplikacija','tehnologija')) return 'Tehnologija';
+  if (has('neurje','vreme','poplava','sneg','vihar','nevihta','arso')) return 'Vreme';
+  if (has('glasba','film','serija','koncert','festival','zabava')) return 'Zabava';
   return 'Družba';
 }
-function snippet(t, max=180){ const s=(t||'').replace(/\s+/g,' ').trim(); return s.length<=max?s:s.slice(0,max-1)+'…'; }
+const snippet = (t, n=180) => {
+  const s = (t||'').replace(/\s+/g,' ').trim();
+  return s.length<=n?s:s.slice(0,n-1)+'…';
+};
 
-// ---- main ----
+async function tryFetch(url) {
+  // proxy najprej, nato direkten URL
+  const urls = [proxy(url), url];
+  let lastErr;
+  for (const u of urls) {
+    try {
+      const res = await fetch(u, {
+        headers: { 'user-agent':'Mozilla/5.0', 'accept-language':'sl-SI,sl;q=0.9,en;q=0.8' }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const txt = await res.text();
+      if (!txt || txt.length < 100) throw new Error('empty');
+      return { txt, used: u };
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('fetch_failed');
+}
+
 (async () => {
   const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    console.error('Missing SUPABASE_URL / SUPABASE_ANON_KEY env');
-    process.exit(1);
+    console.log(JSON.stringify({ ok:false, reason:'missing_supabase_env' }));
+    process.exit(0);
   }
   const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-  const { since, until } = yesterdayRange();
-  const q = encodeURIComponent(`lang:sl since:${since} until:${until}`);
-  const rssPath = `/search/rss?f=tweets&q=${q}`;
-  const htmlPath = `/search?f=tweets&q=${q}`;
+  const { since, until } = yRangeUTC();
+
+  // več variant poizvedb – širimo mrežo
+  const queries = [
+    `lang:sl src:tweet since:${since} until:${until}`,
+    `src:tweet since:${since} until:${until}`,             // brez language filtra
+    `lang:sl since:${since} until:${until}`,               // brez src
+  ];
 
   let items = [];
+  const attempts = [];
 
-  // 1) poskusi RSS (prek več instanc)
+  // 1) POSKUS RSS (hitrejši, včasih deluje, a brez engagementa)
   for (const base of NITTERS) {
-    try {
-      const res = await fetch(proxy(`${base}${rssPath}`));
-      if (!res.ok) continue;
-      const xml = await res.text();
-      if (!xml || xml.length < 100) continue;
-
-      const $rss = cheerio.load(xml, { xmlMode: true });
-      const nodes = $rss('item');
-      if (nodes.length === 0) continue;
-
-      nodes.each((_, el) => {
-        const $el = $rss(el);
-        const title = ($el.find('title').text() || '').trim();
-        const link = ($el.find('link').text() || '').trim();
-        const id = (link.split('/status/')[1] || '').split(/[?#]/)[0];
-        if (!id || !title) return;
-        items.push({
-          id,
-          text: title,
-          url: link.replace('https://nitter.net', 'https://x.com').replace('/i/web',''),
-          likes: 0, retweets: 0,
-          dateISO: new Date().toISOString()
-        });
-      });
-      if (items.length) break;
-    } catch {}
+    for (const q of queries) {
+      const rssUrl = `${base}/search/rss?f=tweets&q=${encodeURIComponent(q)}`;
+      try {
+        const { txt, used } = await tryFetch(rssUrl);
+        const $ = cheerio.load(txt, { xmlMode: true });
+        const nodes = $('item');
+        attempts.push({ step:'rss', base, q, ok:true, count:nodes.length, used });
+        if (nodes.length) {
+          nodes.each((_, el) => {
+            const t = $(el).find('title').text().trim();
+            const link = $(el).find('link').text().trim();
+            const id = (link.split('/status/')[1] || '').split(/[?#]/)[0];
+            if (!id || !t) return;
+            items.push({
+              id, text: t,
+              url: link.replace('https://nitter.net','https://x.com').replace('/i/web',''),
+              likes: 0, retweets: 0,
+              dateISO: new Date().toISOString()
+            });
+          });
+          // ne prekinjamo – poskusimo še HTML za engagement
+        }
+      } catch (e) {
+        attempts.push({ step:'rss', base, q, ok:false, error:String(e) });
+      }
+    }
   }
 
-  // 2) fallback: HTML (prek proxyja)
-  if (!items.length) {
-    for (const base of NITTERS) {
+  // 2) POSKUS HTML (za ❤️/🔁)
+  let htmlFound = 0;
+  for (const base of NITTERS) {
+    for (const q of queries) {
+      const htmlUrl = `${base}/search?f=tweets&q=${encodeURIComponent(q)}`;
       try {
-        const res = await fetch(proxy(`${base}${htmlPath}`), {
-          headers: {'user-agent':'Mozilla/5.0','accept-language':'sl-SI,sl;q=0.9,en;q=0.8'}
-        });
-        if (!res.ok) continue;
-        const html = await res.text();
-        if (!html || (!html.includes('timeline') && !html.includes('timeline-item'))) continue;
+        const { txt, used } = await tryFetch(htmlUrl);
+        const $ = cheerio.load(txt);
+        const rows = $('.timeline .timeline-item');
+        attempts.push({ step:'html', base, q, ok:true, count:rows.length, used });
+        if (!rows.length) continue;
 
-        const $ = cheerio.load(html);
-        $('.timeline .timeline-item').each((_, el) => {
-          const $el = $(el);
-          const link = $el.find('.tweet-date a').attr('href') || '';
+        rows.each((_i, el) => {
+          const link = $(el).find('.tweet-date a').attr('href') || '';
           const id = (link.split('/status/')[1] || '').split(/[?/]/)[0];
           if (!id) return;
-          const text = ($el.find('.tweet-content').text() || '').trim();
-          const number = (sel) => {
-            const raw = ($el.find(sel).text() || '').replace(/[^0-9]/g,'');
-            return Number(raw || 0);
-          };
-          const likes = number('.icon-heart + .tweet-stat');
-          const retweets = number('.icon-retweet + .tweet-stat');
-          const dateAttr = $el.find('.tweet-date a').attr('title') || '';
+          const text = $(el).find('.tweet-content').text().trim();
+          const num = (sel) => Number(($(el).find(sel).text() || '').replace(/[^0-9]/g,'') || 0);
+          const likes = num('.icon-heart + .tweet-stat');
+          const retweets = num('.icon-retweet + .tweet-stat');
+          const dateAttr = $(el).find('.tweet-date a').attr('title') || '';
           const dateISO = dateAttr ? new Date(dateAttr).toISOString() : new Date().toISOString();
 
-          items.push({
+          // ali že obstaja iz RSS? -> nadgradi
+          const ix = items.findIndex(x => x.id === id);
+          const rec = {
             id, text,
             url: `https://x.com${link.replace('/i/web','')}`,
             likes, retweets, dateISO
-          });
+          };
+          if (ix >= 0) items[ix] = rec; else items.push(rec);
         });
-        if (items.length) break;
-      } catch {}
+        htmlFound += rows.length;
+        if (htmlFound > 100) break;
+      } catch (e) {
+        attempts.push({ step:'html', base, q, ok:false, error:String(e) });
+      }
     }
   }
 
   if (!items.length) {
-    console.log(JSON.stringify({ ok:false, reason:'no_items_from_nitter', since, until }, null, 2));
+    console.log(JSON.stringify({ ok:false, reason:'no_items', since, until, attempts }, null, 2));
     process.exit(0);
   }
 
@@ -133,7 +160,6 @@ function snippet(t, max=180){ const s=(t||'').replace(/\s+/g,' ').trim(); return
     const cat = categorize(t.text);
     const sn = snippet(t.text);
     const score = (t.likes || 0) + (t.retweets || 0) * 2;
-
     const { error } = await db.from('tweets').upsert({
       id: Number(t.id),
       text: t.text,
@@ -148,5 +174,5 @@ function snippet(t, max=180){ const s=(t||'').replace(/\s+/g,' ').trim(); return
     if (!error) saved++;
   }
 
-  console.log(JSON.stringify({ ok:true, saved, since, until }, null, 2));
+  console.log(JSON.stringify({ ok:true, saved, total: items.length, since, until }, null, 2));
 })();
