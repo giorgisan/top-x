@@ -1,7 +1,10 @@
+import dynamic from 'next/dynamic';
 import { supabase } from '../lib/supabase';
 
-export const dynamic = 'force-dynamic'; // ne prerenderiraj pri buildu
-export const revalidate = 0;            // brez ISR cachinga
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+const ImportClient = dynamic(() => import('./import-client'), { ssr: false });
 
 type Row = {
   id: number;
@@ -19,20 +22,23 @@ export default async function Page() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
+  const header = (
+    <div className="header">
+      <h1 style={{fontWeight:700, fontSize:28}}>Top tviti včeraj 🇸🇮</h1>
+      <small className="muted">cron + Supabase · kategorije brez AI</small>
+    </div>
+  );
+
   if (!url || !anon) {
     return (
       <main className="container">
-        <div className="header">
-          <h1 style={{fontWeight:700, fontSize:28}}>Top tviti včeraj 🇸🇮</h1>
-          <small className="muted">cron + Supabase</small>
-        </div>
+        {header}
         <div className="card">
           Manjkajo environment spremenljivke v Vercel projektu:
           <ul style={{marginTop:8, lineHeight:1.5}}>
             <li><code>NEXT_PUBLIC_SUPABASE_URL</code></li>
             <li><code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code></li>
           </ul>
-          Dodaj ju v <i>Project → Settings → Environment Variables (Production)</i> in redeploy.
         </div>
       </main>
     );
@@ -68,14 +74,15 @@ export default async function Page() {
 
   return (
     <main className="container">
-      <div className="header">
-        <h1 style={{fontWeight:700, fontSize:28}}>Top tviti včeraj 🇸🇮</h1>
-        <small className="muted">cron + Supabase · kategorije brez AI</small>
-      </div>
+      {header}
 
       {error && <div className="card">Napaka pri branju: {error.message}</div>}
-
-      {!tweets.length && <div className="card">Ni podatkov — zaženi <code>/api/fetch</code> ali počakaj na cron.</div>}
+      {!tweets.length && (
+        <>
+          <div className="card">Ni podatkov — poskusi “fallback” uvoz spodaj.</div>
+          <ImportClient />
+        </>
+      )}
 
       {ordered.map(([cat, rows]) => (
         <section key={cat} style={{marginBottom:24}}>
