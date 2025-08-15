@@ -17,9 +17,56 @@ type TopTweet = {
   score: number;
 };
 
+// Fallback seznam javnih Nitter instanc (nekatere so včasih offline)
+// Po potrebi lahko dodaš/odstraniš.
+const NITTERS = [
+  'https://nitter.net',
+  'https://nitter.privacydev.net',
+  'https://nitter.fdn.fr',
+  'https://nitter.poast.org',
+  'https://nitter.moomoo.me',
+];
+
+function timeout(ms: number) {
+  return new Promise((_r, rej) => setTimeout(() => rej(new Error('timeout')), ms));
+}
+
+async function fetchFromAny(urls: string[]): Promise<{ html: string; instance: string }> {
+  let lastErr: any = null;
+
+  for (const base of urls) {
+    const searchUrl = base;
+    try {
+      const controller = new AbortController();
+      const p = fetch(searchUrl, {
+        headers: {
+          'user-agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36',
+          'accept-language': 'sl-SI,sl;q=0.9,en;q=0.8'
+        },
+        cache: 'no-store',
+        signal: controller.signal
+      });
+
+      const res = (await Promise.race([p, timeout(12000)])) as Response;
+      if (!res || !('ok' in res)) throw new Error('no response');
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      const html = await res.text();
+      // hiter sanity check
+      if (!html || !html.includes('timeline')) throw new Error('unexpected html');
+      return { html, instance: base };
+    } catch (e) {
+      lastErr = e;
+      // poskusi naslednjo instanco
+      continue;
+    }
+  }
+  throw lastErr || new Error('all nitter instances failed');
+}
+
 export async function GET() {
   try {
-    const db = supabase(); // <-- pridobi klient
+    const db = supabase(); // Supabase klient
 
     // včeraj
     const now = new Date();
@@ -28,12 +75,22 @@ export async function GET() {
     const since = now.toISOString().slice(0, 10);
 
     const query = encodeURIComponent(`lang:sl since:${since} until:${until}`);
-    const nitterUrl = `https://nitter.net/search?f=tweets&q=${query}`;
+    const searchPath = `/search?f=tweets&q=${query}`;
 
-    const html = await fetch(nitterUrl, {
-      headers: { 'user-agent': 'Mozilla/5.0 Chrome/123 Safari/537.36' },
-      cache: 'no-store'
-    }).then(r => r.text());
+    // poskusi več instanc
+    let html = '';
+    let usedInstance = '';
+    try {
+      const r = await fetchFromAny(NITTERS.map((b) => `${b}${searchPath}`));
+      html = r.html;
+      usedInstance = r.instance;
+    } catch (err: any) {
+      console.error('Nitter fetch error:', err);
+      return new Response(
+        JSON.stringify({ ok: false, error: 'nitter_fetch_failed', detail: String(err) }),
+        { status: 502, headers: { 'content-type': 'application/json' } }
+      );
+    }
 
     const root = parse(html);
     const els = root.querySelectorAll('.timeline .timeline-item');
@@ -63,33 +120,50 @@ export async function GET() {
       const score = likes + retweets * 2;
 
       items.push({
-        id, text,
+        id,
+        text,
         url: `https://x.com${href.replace('/i/web', '')}`,
-        likes, retweets, dateISO,
-        category, snippet, score
+        likes,
+        retweets,
+        dateISO,
+        category,
+        snippet,
+        score
       });
     }
 
-    // upsert v Supabase (OPOMBA: db namesto supabase)
-    for (const t of items) {
-      await db.from('tweets').upsert({
-        id: Number(t.id),
-        text: t.text,
-        url: t.url,
-        likes: t.likes,
-        retweets: t.retweets,
-        date: t.dateISO,
-        category: t.category,
-        snippet: t.snippet,
-        score: t.score
-      });
+    // upsert v Supabase
+    try {
+      for (const t of items) {
+        await db.from('tweets').upsert({
+          id: Number(t.id),
+          text: t.text,
+          url: t.url,
+          likes: t.likes,
+          retweets: t.retweets,
+          date: t.dateISO,
+          category: t.category,
+          snippet: t.snippet,
+          score: t.score
+        });
+      }
+    } catch (e: any) {
+      // tipični Supabase problemi: RLS, schema, ključi
+      return new Response(
+        JSON.stringify({ ok: false, error: 'supabase_upsert_failed', detail: String(e) }),
+        { status: 500, headers: { 'content-type': 'application/json' } }
+      );
     }
 
-    return new Response(JSON.stringify({ ok: true, saved: items.length, since, until }), {
-      headers: { 'content-type': 'application/json' }
-    });
+    return new Response(
+      JSON.stringify({ ok: true, saved: items.length, since, until, nitter: usedInstance }),
+      { headers: { 'content-type': 'application/json' } }
+    );
   } catch (e: any) {
     console.error(e);
-    return new Response(JSON.stringify({ ok: false, error: e?.message || 'failed' }), { status: 500 });
+    return new Response(JSON.stringify({ ok: false, error: e?.message || 'failed' }), {
+      status: 500,
+      headers: { 'content-type': 'application/json' }
+    });
   }
 }
