@@ -1,5 +1,6 @@
 import { parse } from 'node-html-parser';
 import { supabase } from '../../../lib/supabase';
+import { categorize, makeSnippet } from '../../../lib/categorize';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -11,10 +12,15 @@ type TopTweet = {
   likes: number;
   retweets: number;
   dateISO: string;
+  category: string;
+  snippet: string;
+  score: number;
 };
 
 export async function GET() {
   try {
+    const db = supabase(); // <-- pridobi klient
+
     // včeraj
     const now = new Date();
     const until = now.toISOString().slice(0, 10);
@@ -52,25 +58,30 @@ export async function GET() {
       const dateAttr = linkEl?.getAttribute('title') ?? '';
       const dateISO = dateAttr ? new Date(dateAttr).toISOString() : new Date().toISOString();
 
+      const category = categorize(text);
+      const snippet = makeSnippet(text);
+      const score = likes + retweets * 2;
+
       items.push({
-        id,
-        text,
+        id, text,
         url: `https://x.com${href.replace('/i/web', '')}`,
-        likes,
-        retweets,
-        dateISO
+        likes, retweets, dateISO,
+        category, snippet, score
       });
     }
 
-    // upsert v Supabase
+    // upsert v Supabase (OPOMBA: db namesto supabase)
     for (const t of items) {
-      await supabase.from('tweets').upsert({
+      await db.from('tweets').upsert({
         id: Number(t.id),
         text: t.text,
         url: t.url,
         likes: t.likes,
         retweets: t.retweets,
-        date: t.dateISO
+        date: t.dateISO,
+        category: t.category,
+        snippet: t.snippet,
+        score: t.score
       });
     }
 
