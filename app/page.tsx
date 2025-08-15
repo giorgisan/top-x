@@ -12,10 +12,10 @@ type Row = {
   url: string;
   likes: number;
   retweets: number;
-  date: string;
-  category: string;
-  snippet: string;
-  score: number;
+  date: string | null;
+  category: string | null;
+  snippet: string | null;
+  score: number | null;
 };
 
 export default async function Page() {
@@ -34,14 +34,10 @@ export default async function Page() {
       <main className="container">
         {header}
         <div className="card">
-          Manjkajo environment spremenljivke v Vercel projektu:
+          Manjkajo environment spremenljivke v Vercelu:
           <ul style={{ marginTop: 8, lineHeight: 1.5 }}>
-            <li>
-              <code>NEXT_PUBLIC_SUPABASE_URL</code>
-            </li>
-            <li>
-              <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>
-            </li>
+            <li><code>NEXT_PUBLIC_SUPABASE_URL</code></li>
+            <li><code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code></li>
           </ul>
         </div>
       </main>
@@ -57,13 +53,25 @@ export default async function Page() {
   const yEnd = new Date(yStart);
   yEnd.setDate(yEnd.getDate() + 1);
 
-  const { data, error } = await db
+  // 1) poskusi prebrati včeraj
+  let { data, error } = await db
     .from('tweets')
     .select('*')
     .gte('date', yStart.toISOString())
     .lt('date', yEnd.toISOString())
     .order('score', { ascending: false })
     .limit(100);
+
+  // 2) fallback: če ni včeraj, pokaži zadnjih 50 po datumu
+  if (!error && (!data || data.length === 0)) {
+    const r = await db
+      .from('tweets')
+      .select('*')
+      .order('date', { ascending: false, nullsFirst: false })
+      .limit(50);
+    data = r.data || [];
+    error = r.error || null;
+  }
 
   const tweets = (data || []) as Row[];
 
@@ -97,13 +105,11 @@ export default async function Page() {
           <div className="grid">
             {rows.slice(0, 20).map((t) => (
               <article className="card" key={t.id}>
-                <p style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>{t.snippet}</p>
+                <p style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>{t.snippet || t.text}</p>
                 <div className="badge">
-                  ❤️ {t.likes} · 🔁 {t.retweets} · ⚡ {t.score}
+                  ❤️ {t.likes ?? 0} · 🔁 {t.retweets ?? 0} · ⚡ {t.score ?? 0}
                 </div>
-                <a href={t.url} target="_blank" rel="noreferrer">
-                  Odpri tvit
-                </a>
+                <a href={t.url} target="_blank" rel="noreferrer">Odpri tvit</a>
               </article>
             ))}
           </div>
