@@ -1,10 +1,10 @@
-import dynamic from 'next/dynamic';
+import nextDynamic from 'next/dynamic';
 import { supabase } from '../lib/supabase';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const ImportClient = dynamic(() => import('./import-client'), { ssr: false });
+const ImportClient = nextDynamic(() => import('./import-client'), { ssr: false });
 
 type Row = {
   id: number;
@@ -24,7 +24,7 @@ export default async function Page() {
 
   const header = (
     <div className="header">
-      <h1 style={{fontWeight:700, fontSize:28}}>Top tviti včeraj 🇸🇮</h1>
+      <h1 style={{ fontWeight: 700, fontSize: 28 }}>Top tviti včeraj 🇸🇮</h1>
       <small className="muted">cron + Supabase · kategorije brez AI</small>
     </div>
   );
@@ -35,9 +35,13 @@ export default async function Page() {
         {header}
         <div className="card">
           Manjkajo environment spremenljivke v Vercel projektu:
-          <ul style={{marginTop:8, lineHeight:1.5}}>
-            <li><code>NEXT_PUBLIC_SUPABASE_URL</code></li>
-            <li><code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code></li>
+          <ul style={{ marginTop: 8, lineHeight: 1.5 }}>
+            <li>
+              <code>NEXT_PUBLIC_SUPABASE_URL</code>
+            </li>
+            <li>
+              <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>
+            </li>
           </ul>
         </div>
       </main>
@@ -77,6 +81,7 @@ export default async function Page() {
       {header}
 
       {error && <div className="card">Napaka pri branju: {error.message}</div>}
+
       {!tweets.length && (
         <>
           <div className="card">Ni podatkov — poskusi “fallback” uvoz spodaj.</div>
@@ -85,14 +90,20 @@ export default async function Page() {
       )}
 
       {ordered.map(([cat, rows]) => (
-        <section key={cat} style={{marginBottom:24}}>
-          <h2 style={{fontSize:18, fontWeight:700, margin:'6px 0 12px 0'}}>{cat} · {rows.length}</h2>
+        <section key={cat} style={{ marginBottom: 24 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, margin: '6px 0 12px 0' }}>
+            {cat} · {rows.length}
+          </h2>
           <div className="grid">
-            {rows.slice(0, 20).map(t => (
+            {rows.slice(0, 20).map((t) => (
               <article className="card" key={t.id}>
-                <p style={{whiteSpace:'pre-wrap', marginBottom:8}}>{t.snippet}</p>
-                <div className="badge">❤️ {t.likes} · 🔁 {t.retweets} · ⚡ {t.score}</div>
-                <a href={t.url} target="_blank" rel="noreferrer">Odpri tvit</a>
+                <p style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>{t.snippet}</p>
+                <div className="badge">
+                  ❤️ {t.likes} · 🔁 {t.retweets} · ⚡ {t.score}
+                </div>
+                <a href={t.url} target="_blank" rel="noreferrer">
+                  Odpri tvit
+                </a>
               </article>
             ))}
           </div>
