@@ -3,7 +3,7 @@ name: Daily fetch tweets
 on:
   schedule:
     - cron: '5 5 * * *'   # vsak dan ob 05:05 UTC
-  workflow_dispatch:       # omogoča ročni zagon
+  workflow_dispatch:       # ročni zagon
 
 jobs:
   fetch:
@@ -18,8 +18,9 @@ jobs:
         with:
           node-version: '20'
 
+      # NIMAMO package-lock.json -> uporabljamo npm install
       - name: Install deps
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Run fetch
         run: node scripts/fetch.mjs
