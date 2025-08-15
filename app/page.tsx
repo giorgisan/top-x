@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
 
-export const revalidate = 600; // 10 min
+export const dynamic = 'force-dynamic'; // ne prerenderiraj pri buildu
+export const revalidate = 0;            // brez ISR cachinga
 
 type Row = {
   id: number;
@@ -15,6 +16,28 @@ type Row = {
 };
 
 export default async function Page() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !anon) {
+    return (
+      <main className="container">
+        <div className="header">
+          <h1 style={{fontWeight:700, fontSize:28}}>Top tviti včeraj 🇸🇮</h1>
+          <small className="muted">cron + Supabase</small>
+        </div>
+        <div className="card">
+          Manjkajo environment spremenljivke v Vercel projektu:
+          <ul style={{marginTop:8, lineHeight:1.5}}>
+            <li><code>NEXT_PUBLIC_SUPABASE_URL</code></li>
+            <li><code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code></li>
+          </ul>
+          Dodaj ju v <i>Project → Settings → Environment Variables (Production)</i> in redeploy.
+        </div>
+      </main>
+    );
+  }
+
   const db = supabase();
 
   // včeraj 00:00–24:00
