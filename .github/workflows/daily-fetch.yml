@@ -57,6 +57,6 @@ jobs:
 
       - name: Import into Supabase
         env:
-          SUPABASE_URL: ${{ secrets.https://otryodjejwsjzervqmez.supabase.co }}
-          SUPABASE_ANON_KEY: ${{ secrets.sb_publishable_3ts0MbO6JoptPuFKwuXJkw_qFF96HtZ }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: node scripts/import_from_jsonl.mjs scraped.jsonl
