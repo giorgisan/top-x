@@ -1,43 +1,43 @@
-name: Daily fetch tweets (snscrape)
+name: Daily fetch tweets
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '20 5 * * *'   # 05:20 UTC
+    # vsak dan ob 05:10 UTC (po potrebi spremeni)
+    - cron: "10 5 * * *"
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      # Python 3.11 (snscrape je stabilen na 3.10/3.11)
-      - name: Setup Python 3.11
+      # --- Python del za snscrape ---
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      # Zadnja snscrape iz GitHub-a (pogosto vsebuje fix-e)
-      - name: Install snscrape
+      - name: Install snscrape + certifi
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir "git+https://github.com/JustAnotherArchivist/snscrape.git"
-          snscrape --version
-
-      - name: Install Node deps
-        run: npm ci || npm i
+          pip install --upgrade snscrape certifi
 
       - name: Scrape yesterday (SLO)
+        id: scrape
         shell: bash
         run: |
           set -euo pipefail
+
+          # ---- FIX za SSL: prisili requests/openssl na certifi CA bundle ----
+          CERT_PATH=$(python -c "import certifi; print(certifi.where())")
+          export SSL_CERT_FILE="$CERT_PATH"
+          export REQUESTS_CA_BUNDLE="$CERT_PATH"
+          echo "Using CA bundle: $CERT_PATH"
+          # ------------------------------------------------------------------
+
           YESTERDAY=$(date -u -d "yesterday" +%F)
           TODAY=$(date -u +%F)
           echo "Scraping from $YESTERDAY to $TODAY (UTC)"
@@ -45,40 +45,51 @@ jobs:
           rm -f scraped.jsonl
           touch scraped.jsonl
 
-          # 1) jezik
+          # 1) jezik: slovenščina
           snscrape --jsonl twitter-search "lang:sl since:$YESTERDAY until:$TODAY" >> scraped.jsonl || true
 
-          # 2) dodatni slovenski kontekst
+          # 2) slovenski kontekst (kraji/pojmi)
           snscrape --jsonl twitter-search "lang:sl (Slovenija OR Ljubljana OR Maribor OR Celje OR Koper OR Kranj OR Gorenjska OR Primorska OR Štajerska OR Dolenjska OR Prekmurje OR slovenski OR slovenska OR slovenskem) since:$YESTERDAY until:$TODAY" >> scraped.jsonl || true
 
-          # 3) večji SLO računi
+          # 3) večji SLO računi (če kateri pade, nadaljujemo)
           ACCOUNTS=(STA_novice RTV_Slovenija 24ur_com vecer Delo Dnevnik_si SiolNEWS FinanceSI vladaRS DrzavniZbor Arso_Vreme nzs_si nkmaribor nkolimpija OKS_olympicteam TeamSlovenia)
           for U in "${ACCOUNTS[@]}"; do
             snscrape --jsonl twitter-search "from:$U since:$YESTERDAY until:$TODAY" >> scraped.jsonl || true
+            sleep 1
           done
 
           echo "----- SCRAPE SUMMARY -----"
           if [ -s scraped.jsonl ]; then
             LINES=$(wc -l < scraped.jsonl)
             echo "scraped.jsonl lines: $LINES"
-            head -n 3 scraped.jsonl || true
+            echo "has_data=true" >> "$GITHUB_OUTPUT"
           else
             echo "scraped.jsonl is EMPTY"
+            echo "has_data=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Vedno priložimo artefakt, da lahko preveriš surove zadetke
-      - name: Upload scraped.jsonl artifact
+      - name: Upload scraped.jsonl (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: scraped-jsonl
           path: scraped.jsonl
-          if-no-files-found: warn
-          retention-days: 3
 
-      # Uvoz izvedemo samo, če datoteka ni prazna
+      # --- Node del za uvoz v Supabase ---
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        # uporabi install (ne ci), ker ni lockfile-a
+        run: npm install --no-fund --no-audit
+
       - name: Import into Supabase
-        if: ${{ hashFiles('scraped.jsonl') != '' && steps.check_empty.outputs.empty != 'true' }}
+        if: steps.scrape.outputs.has_data == 'true'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        run: node scripts/import_from_jsonl.mjs scraped.jsonl
+        run: |
+          # pričakuje se, da imaš skripto scripts/import_from_jsonl.mjs
+          # format: node scripts/import_from_jsonl.mjs scraped.jsonl
+          node scripts/import_from_jsonl.mjs scraped.jsonl
