@@ -1,85 +1,142 @@
-// scripts/import_from_jsonl.mjs
-import fs from 'node:fs';
-import readline from 'node:readline';
-import { createClient } from '@supabase/supabase-js';
+// scripts/fetch_x_and_import.mjs
+import fetch from "cross-fetch";
+import { createClient } from "@supabase/supabase-js";
 
-const file = process.argv[2] || 'scraped.jsonl';
-if (!fs.existsSync(file)) {
-  console.log(`Import: file "${file}" not found — nothing to do. Exit 0.`);
-  process.exit(0);
-}
-const stat = fs.statSync(file);
-if (stat.size === 0) {
-  console.log(`Import: file "${file}" is empty — nothing to import. Exit 0.`);
-  process.exit(0);
-}
+// ---- CONFIG ----
+// Računi (brez @). Svobodno dodajaj/odvzemi.
+const ACCOUNTS = [
+  "STA_novice","RTV_Slovenija","24ur_com","vecer","Delo","Dnevnik_si",
+  "SiolNEWS","FinanceSI","vladaRS","DrzavniZbor","Arso_Vreme",
+  "nzs_si","nkmaribor","nkolimpija","OKS_olympicteam","TeamSlovenia"
+];
 
+// Dodatne proste poizvedbe (jezik, kraji …) – po želji razširi/skrči.
+const QUERIES = [
+  `lang:sl`,
+  `lang:sl (Slovenija OR Ljubljana OR Maribor OR Celje OR Koper OR Kranj OR Gorenjska OR Primorska OR Štajerska OR Dolenjska OR Prekmurje OR slovenski OR slovenska OR slovenskem)`
+];
+
+// Koliko maksimalno na klic (X API limit je 10–100).
+const MAX_RESULTS = 100;
+
+// ---- TIME WINDOW: včeraj v UTC ----
+const now = new Date();
+const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())); // danes 00:00 UTC
+const start = new Date(end); start.setUTCDate(start.getUTCDate() - 1); // včeraj 00:00 UTC
+const startISO = start.toISOString();
+const endISO   = end.toISOString();
+
+// ---- ENV & klienti ----
+const X_BEARER_TOKEN = process.env.X_BEARER_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  console.error('Missing SUPABASE_URL or SUPABASE_ANON_KEY.');
-  process.exit(1);
-}
+
+if (!X_BEARER_TOKEN) throw new Error("Manjka X_BEARER_TOKEN v secrets.");
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) throw new Error("Manjka SUPABASE_URL ali SUPABASE_ANON_KEY.");
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Helper: iz JSONL polja izluščimo, kar potrebujemo
-function mapTweet(obj) {
-  const id = Number(obj.id) || null;
-  const url = obj.url || null;
-  const text = (obj.content || obj.renderedContent || obj.fullText || '').toString();
-  const likes = obj.likeCount ?? obj.likes ?? 0;
-  const retweets = obj.retweetCount ?? obj.retweets ?? 0;
-  const replies = obj.replyCount ?? 0;
-  const score = Number(likes) + Number(retweets) * 2 + Number(replies);
-  const date = obj.date ? new Date(obj.date).toISOString() : new Date().toISOString();
+// ---- pomožne ----
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
+function buildUrl(query, nextToken) {
+  const u = new URL("https://api.twitter.com/2/tweets/search/recent");
+  u.searchParams.set("query", query);
+  u.searchParams.set("max_results", String(MAX_RESULTS));
+  u.searchParams.set("start_time", startISO);
+  u.searchParams.set("end_time", endISO);
+  u.searchParams.set("tweet.fields", "created_at,lang,public_metrics");
+  u.searchParams.set("expansions", "author_id");
+  u.searchParams.set("user.fields", "username,name,verified");
+  if (nextToken) u.searchParams.set("next_token", nextToken);
+  return u.toString();
+}
+
+async function searchAll(query) {
+  let nextToken = undefined;
+  const out = [];
+  for (let page = 0; page < 50; page++) { // varovalo
+    const url = buildUrl(query, nextToken);
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${X_BEARER_TOKEN}` }});
+    if (!r.ok) {
+      const body = await r.text();
+      throw new Error(`X API error ${r.status}: ${body}`);
+    }
+    const data = await r.json();
+    const users = new Map((data.includes?.users || []).map(u => [u.id, u]));
+    for (const t of (data.data || [])) {
+      const user = users.get(t.author_id);
+      out.push({ tweet: t, user });
+    }
+    nextToken = data.meta?.next_token;
+    if (!nextToken) break;
+    await sleep(350); // malo znižamo hitrost
+  }
+  return out;
+}
+
+function toDbRow({ tweet, user }) {
+  const likes = tweet.public_metrics?.like_count ?? 0;
+  const retweets = tweet.public_metrics?.retweet_count ?? 0;
+  const score = likes * 2 + retweets;
+  const username = user?.username || "unknown";
   return {
-    id,
-    text,
-    url,
-    likes: Number(likes) || 0,
-    retweets: Number(retweets) || 0,
-    score: Number(score) || 0,
-    date,
-    category: null,
-    snippet: text.slice(0, 200)
+    text: tweet.text,
+    url: `https://x.com/${username}/status/${tweet.id}`,
+    likes,
+    retweets,
+    date: tweet.created_at,
+    score,
+    category: user ? user.username : null,
+    snippet: tweet.text.length > 200 ? tweet.text.slice(0, 200) + "…" : tweet.text
   };
 }
 
-const stream = fs.createReadStream(file, { encoding: 'utf8' });
-const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-
-let total = 0;
-let batch = [];
-const BATCH_SIZE = 100;
-
-async function flush() {
-  if (batch.length === 0) return;
-  const { error } = await supabase.from('tweets').upsert(batch, { onConflict: 'id' });
-  if (error) {
-    console.error('Supabase upsert error:', error.message);
-  } else {
-    console.log(`Upserted ${batch.length} rows`);
-  }
-  batch = [];
+async function upsertRows(rows) {
+  if (rows.length === 0) return 0;
+  // Če imaš v bazi unikaten constraint na url, lahko uporabiš .upsert({ onConflict: 'url' })
+  const { data, error } = await supabase
+    .from("tweets")
+    .upsert(rows, { onConflict: "url" });
+  if (error) throw error;
+  return data?.length ?? rows.length;
 }
 
-for await (const line of rl) {
-  if (!line.trim()) continue;
-  try {
-    const obj = JSON.parse(line);
-    const row = mapTweet(obj);
-    if (row.id) {
-      batch.push(row);
-      total++;
-      if (batch.length >= BATCH_SIZE) await flush();
+(async () => {
+  console.log(`Fetching window: ${startISO} -> ${endISO}`);
+
+  // 1) iz računov
+  const accountQueries = ACCOUNTS.map(u => `from:${u} -is:retweet -is:quote`);
+  // 2) proste poizvedbe
+  const freeQueries = QUERIES.map(q => `${q} -is:retweet -is:quote`);
+
+  const allQueries = [...accountQueries, ...freeQueries];
+
+  let collected = [];
+  for (const q of allQueries) {
+    console.log("Query:", q);
+    try {
+      const items = await searchAll(q);
+      collected.push(...items);
+      console.log(`  +${items.length} tweets`);
+    } catch (e) {
+      console.error("  FAILED:", e.message);
     }
-  } catch (e) {
-    // ignoriramo pokvarjene vrstice
+    await sleep(300); // mehko
   }
-}
-await flush();
 
-console.log(`Import finished. Total rows considered: ${total}`);
-process.exit(0);
+  // odstrani dvojnike po tweet.id
+  const seen = new Set();
+  const unique = [];
+  for (const it of collected) {
+    if (seen.has(it.tweet.id)) continue;
+    seen.add(it.tweet.id);
+    unique.push(it);
+  }
+
+  console.log(`Total unique: ${unique.length}`);
+
+  const rows = unique.map(toDbRow);
+  const inserted = await upsertRows(rows);
+  console.log(`Upserted: ${inserted}`);
+})();
