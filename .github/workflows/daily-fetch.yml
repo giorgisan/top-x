@@ -1,9 +1,11 @@
 name: Daily fetch tweets (snscrape)
 
 on:
+  # ročni zagon iz GitHub Actions zavihka
   workflow_dispatch:
+  # vsak dan ob 05:20 UTC (07:20 poleti v SLO)
   schedule:
-    - cron: '20 5 * * *' # vsak dan ob 05:20 UTC
+    - cron: '20 5 * * *'
 
 jobs:
   fetch:
@@ -37,22 +39,20 @@ jobs:
           TODAY=$(date -u +%F)
           echo "Scraping from $YESTERDAY to $TODAY (UTC)"
 
-          # počistimo
           rm -f scraped.jsonl
 
           # 1) širok jezikovni filter
           snscrape --jsonl twitter-search "lang:sl since:$YESTERDAY until:$TODAY" >> scraped.jsonl || true
 
-          # 2) jezik + kontekst (nekaj SLO entitet)
+          # 2) jezik + SLO kontekst
           snscrape --jsonl twitter-search "lang:sl (Slovenija OR Ljubljana OR Maribor OR Celje OR Koper OR Kranj OR Gorenjska OR Primorska OR Štajerska OR Dolenjska OR Prekmurje OR slovenski OR slovenska OR slovenskem) since:$YESTERDAY until:$TODAY" >> scraped.jsonl || true
 
-          # 3) nekaj večjih računov kot varnostna mreža (tviti včeraj)
+          # 3) večji SLO računi kot safety-net
           ACCOUNTS=(STA_novice RTV_Slovenija 24ur_com vecer Delo Dnevnik_si SiolNEWS FinanceSI vladaRS DrzavniZbor Arso_Vreme nzs_si nkmaribor nkolimpija OKS_olympicteam TeamSlovenia)
           for U in "${ACCOUNTS[@]}"; do
             snscrape --jsonl twitter-search "from:$U since:$YESTERDAY until:$TODAY" >> scraped.jsonl || true
           done
 
-          echo "Lines scraped:"
           wc -l scraped.jsonl || true
 
       - name: Import into Supabase
