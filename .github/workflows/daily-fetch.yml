@@ -1,28 +1,62 @@
-name: Daily fetch tweets
+name: Daily fetch tweets (snscrape)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '15 5 * * *'  # vsak dan ob 05:15 UTC
+    - cron: '20 5 * * *' # vsak dan ob 05:20 UTC
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Use Node
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install deps
+      - name: Setup Python + snscrape
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install snscrape
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir snscrape
+
+      - name: Install Node deps
         run: npm ci || npm i
 
-      - name: Run fetch
+      - name: Scrape yesterday (SLO)
+        run: |
+          set -e
+          YESTERDAY=$(date -u -d "yesterday" +%F)
+          TODAY=$(date -u +%F)
+          echo "Scraping from $YESTERDAY to $TODAY (UTC)"
+
+          # počistimo
+          rm -f scraped.jsonl
+
+          # 1) širok jezikovni filter
+          snscrape --jsonl twitter-search "lang:sl since:$YESTERDAY until:$TODAY" >> scraped.jsonl || true
+
+          # 2) jezik + kontekst (nekaj SLO entitet)
+          snscrape --jsonl twitter-search "lang:sl (Slovenija OR Ljubljana OR Maribor OR Celje OR Koper OR Kranj OR Gorenjska OR Primorska OR Štajerska OR Dolenjska OR Prekmurje OR slovenski OR slovenska OR slovenskem) since:$YESTERDAY until:$TODAY" >> scraped.jsonl || true
+
+          # 3) nekaj večjih računov kot varnostna mreža (tviti včeraj)
+          ACCOUNTS=(STA_novice RTV_Slovenija 24ur_com vecer Delo Dnevnik_si SiolNEWS FinanceSI vladaRS DrzavniZbor Arso_Vreme nzs_si nkmaribor nkolimpija OKS_olympicteam TeamSlovenia)
+          for U in "${ACCOUNTS[@]}"; do
+            snscrape --jsonl twitter-search "from:$U since:$YESTERDAY until:$TODAY" >> scraped.jsonl || true
+          done
+
+          echo "Lines scraped:"
+          wc -l scraped.jsonl || true
+
+      - name: Import into Supabase
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
-        run: node scripts/fetch.mjs
+          SUPABASE_URL: ${{ secrets.https://otryodjejwsjzervqmez.supabase.co }}
+          SUPABASE_ANON_KEY: ${{ secrets.sb_publishable_3ts0MbO6JoptPuFKwuXJkw_qFF96HtZ }}
+        run: node scripts/import_from_jsonl.mjs scraped.jsonl
