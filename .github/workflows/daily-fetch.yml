@@ -1,11 +1,9 @@
 name: Daily fetch tweets (snscrape)
 
 on:
-  # ročni zagon iz GitHub Actions zavihka
   workflow_dispatch:
-  # vsak dan ob 05:20 UTC (07:20 poleti v SLO)
   schedule:
-    - cron: '20 5 * * *'
+    - cron: '20 5 * * *'   # 05:20 UTC
 
 jobs:
   fetch:
@@ -20,14 +18,17 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Setup Python + snscrape
+      # ⬇️ ključni popravek: Python 3.11 + pin snscrape
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.11'
+
       - name: Install snscrape
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir snscrape
+          pip install --no-cache-dir "snscrape==0.7.0"
+          snscrape --version
 
       - name: Install Node deps
         run: npm ci || npm i
@@ -41,18 +42,15 @@ jobs:
 
           rm -f scraped.jsonl
 
-          # 1) širok jezikovni filter
           snscrape --jsonl twitter-search "lang:sl since:$YESTERDAY until:$TODAY" >> scraped.jsonl || true
-
-          # 2) jezik + SLO kontekst
           snscrape --jsonl twitter-search "lang:sl (Slovenija OR Ljubljana OR Maribor OR Celje OR Koper OR Kranj OR Gorenjska OR Primorska OR Štajerska OR Dolenjska OR Prekmurje OR slovenski OR slovenska OR slovenskem) since:$YESTERDAY until:$TODAY" >> scraped.jsonl || true
 
-          # 3) večji SLO računi kot safety-net
           ACCOUNTS=(STA_novice RTV_Slovenija 24ur_com vecer Delo Dnevnik_si SiolNEWS FinanceSI vladaRS DrzavniZbor Arso_Vreme nzs_si nkmaribor nkolimpija OKS_olympicteam TeamSlovenia)
           for U in "${ACCOUNTS[@]}"; do
             snscrape --jsonl twitter-search "from:$U since:$YESTERDAY until:$TODAY" >> scraped.jsonl || true
           done
 
+          echo "Lines in scraped.jsonl:"
           wc -l scraped.jsonl || true
 
       - name: Import into Supabase
