@@ -1,29 +1,28 @@
 name: Daily fetch tweets
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: '5 5 * * *'   # vsak dan ob 05:05 UTC
-  workflow_dispatch:       # ročni zagon
+    - cron: '15 5 * * *'  # vsak dan ob 05:15 UTC
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Use Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # NIMAMO package-lock.json -> uporabljamo npm install
       - name: Install deps
-        run: npm install --no-audit --no-fund
+        run: npm ci || npm i
 
       - name: Run fetch
-        run: node scripts/fetch.mjs
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
+        run: node scripts/fetch.mjs
